@@ -200,7 +200,8 @@ sd_notifier.notify('READY=1')
 
 # Initialize Mi Flora sensors
 flores = OrderedDict()
-for [name, mac] in config['Sensors'].items():
+
+def add_flower_sensor(flores, name, mac):
     if not re.match("C4:7C:8D:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}", mac):
         print_line('The MAC address "{}" seems to be in the wrong format. Please check your configuration'.format(mac), error=True, sd_notify=True)
         sys.exit(1)
@@ -239,6 +240,10 @@ for [name, mac] in config['Sensors'].items():
         print_line('Initial connection to Mi Flora sensor "{}" ({}) successful'.format(name_pretty, mac), sd_notify=True)
     print()
     flores[name_clean] = flora
+    return flores
+
+for [name, mac] in config['Sensors'].items():
+    flores = add_flower_sensor(flores, name, mac)
 
 # openHAB items generation
 if parse_args.gen_openhab:
