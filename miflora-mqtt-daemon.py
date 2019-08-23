@@ -6,6 +6,7 @@ import re
 import json
 import os.path
 import argparse
+import threading
 from time import time, sleep, localtime, strftime
 from collections import OrderedDict
 from colorama import init as colorama_init
@@ -284,21 +285,26 @@ def clean_identifier(name):
 # Eclipse Paho callbacks - http://www.eclipse.org/paho/clients/python/docs/#callbacks
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        print_line('MQTT connection established', console=True, sd_notify=True)
+        print_line('MQTT connection established, now subscribing to topics', console=True, sd_notify=True)
+
+        mqtt_client.subscribe(MQTT_DEVICES_TOPIC)
+        mqtt_client.message_callback_add(MQTT_DEVICES_TOPIC, new_device_callback)
         print()
     else:
         print_line('Connection error with result code {} - {}'.format(str(rc), mqtt.connack_string(rc)), error=True)
-        #kill main thread
         os._exit(1)
 
 
-def on_publish(client, userdata, mid):
-    #print_line('Data successfully published.')
-    pass
+flores_from_mqtt = OrderedDict()
+flores_from_mqtt_lock = threading.RLock()
 
 
 def new_device_callback(client, userdata, message):
-    print_line('new_device_callback', client, userdata, message)
+    print_line('new_device_callback %s %s' % (message.topic, message.payload))
+    name = message.topic.split('/')[-1]
+    mac = message.payload.decode("utf-8")
+    with flores_from_mqtt_lock:
+        flores_from_mqtt[name] = mac
 
 
 def flores_to_openhab_items(flores, reporting_mode):
@@ -326,7 +332,6 @@ def flores_to_openhab_items(flores, reporting_mode):
                 items.append(' '.join([basic, label, details, channel]))
         items.append('')
         print('\n'.join(items))
-    #elif reporting_mode == 'mqtt-homie':
     else:
         raise IOError('Given reporting_mode not supported for the export to openHAB items')
 
@@ -341,8 +346,8 @@ config.read([os.path.join(config_dir, 'config.ini.dist'), os.path.join(config_di
 reporting_mode = config['General'].get('reporting_method', 'mqtt-json')
 
 # Check reporting mode
-if reporting_mode not in ['mqtt-json', 'mqtt-homie', 'json', 'mqtt-smarthome', 'homeassistant-mqtt', 'thingsboard-json', 'wirenboard-mqtt']:
-    print_line('Configuration parameter reporting_mode set to an invalid value', error=True, sd_notify=True)
+if reporting_mode not in reporting_modes_mapping.keys():
+    print_line('Configuration parameter reporting_mode set to an invalid value (%s)' % reporting_mode, error=True, sd_notify=True)
     sys.exit(1)
 
 reporting_mode_obj = reporting_modes_mapping[reporting_mode]()
@@ -366,17 +371,12 @@ if reporting_mode == 'wirenboard-mqtt' and base_topic:
 
 print_line('Configuration accepted', console=False, sd_notify=True)
 
+
 # MQTT connection
 if reporting_mode_obj.mqtt:
     print_line('Connecting to MQTT broker ...')
     mqtt_client = mqtt.Client()
     mqtt_client.on_connect = on_connect
-    mqtt_client.on_publish = on_publish
-    # mqtt_client.on_message = on_message
-
-    # This code works in another program of mine, but here it doesn't, the callback is never invoked, *scratches head*
-    mqtt_client.subscribe(MQTT_DEVICES_TOPIC, qos=0)
-    mqtt_client.message_callback_add(MQTT_DEVICES_TOPIC, new_device_callback)
 
     reporting_mode_obj.set_will(mqtt_client, base_topic, device_id)
 
@@ -444,19 +444,18 @@ def add_flower_sensor(flores, name, mac):
         print_line('Initial connection to Mi Flora sensor "{}" ({}) failed.'.format(name_pretty, mac), error=True, sd_notify=True)
         return flores
     else:
-        print_line('Internal name: "{}"'.format(name_clean))
-        print_line('Device name:   "{}"'.format(flora_poller.name()))
+        # print_line('Internal name: "{}"'.format(name_clean))
+        # print_line('Device name:   "{}"'.format(flora_poller.name()))
         print_line('MAC address:   {}'.format(flora_poller._mac))
-        print_line('Firmware:      {}'.format(flora_poller.firmware_version()))
+        # print_line('Firmware:      {}'.format(flora_poller.firmware_version()))
         print_line('Initial connection to Mi Flora sensor "{}" ({}) successful'.format(name_pretty, mac), sd_notify=True)
     print()
     flores[name_clean] = flora
     return flores
 
-
-# Initialize Mi Flora sensors
 flores = OrderedDict()
 
+# Initialize Mi Flora sensors from config
 for [name, mac] in config['Sensors'].items():
     flores = add_flower_sensor(flores, name, mac)
 
@@ -473,6 +472,18 @@ print_line('Initialization complete, starting MQTT publish loop', console=False,
 
 # Sensor data retrieval and publication
 while True:
+
+    new = False
+    # Check for new Mi Flora sensors from MQTT configuration and initialize them
+    with flores_from_mqtt_lock:
+        for name, mac in flores_from_mqtt.items():
+            if name not in flores:
+                flores = add_flower_sensor(flores, name, mac)
+                new = True
+        if new:
+            # Discovery Announcement
+            reporting_mode_obj.discovery_announcement(mqtt_client, base_topic, device_id, flores)
+
     for [flora_name, flora] in flores.items():
         data = dict()
         attempts = 2
