@@ -358,8 +358,8 @@ miflora_cache_timeout = sleep_period - 1
 
 # Check configuration
 if not config['Sensors']:
-    print_line('No sensors found in configuration file "config.ini"', error=True, sd_notify=True)
-    sys.exit(1)
+    print_line('No sensors found in configuration file "config.ini", running without any for now...', error=True, sd_notify=True)
+    # sys.exit(1)
 if reporting_mode == 'wirenboard-mqtt' and base_topic:
     print_line('Parameter "base_topic" ignored for "reporting_method = wirenboard-mqtt"', warning=True, sd_notify=True)
 
@@ -409,14 +409,12 @@ if reporting_mode_obj.mqtt:
 
 sd_notifier.notify('READY=1')
 
-# Initialize Mi Flora sensors
-flores = OrderedDict()
-
 
 def add_flower_sensor(flores, name, mac):
     if not re.match("C4:7C:8D:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}", mac):
-        print_line('The MAC address "{}" seems to be in the wrong format. Please check your configuration'.format(mac), error=True, sd_notify=True)
-        sys.exit(1)
+        print_line('The MAC address "{}" seems to be in the wrong format!'.format(mac), error=True, sd_notify=True)
+        return flores
+        #sys.exit(1)
 
     if '@' in name:
         name_pretty, location_pretty = name.split('@')
@@ -426,8 +424,8 @@ def add_flower_sensor(flores, name, mac):
     location_clean = clean_identifier(location_pretty)
 
     flora = dict()
-    print('Adding sensor to device list and testing connection ...')
-    print('Name:          "{}"'.format(name_pretty))
+    print_line('Adding sensor to device list and testing connection ...')
+    print_line('Name:          "{}"'.format(name_pretty))
     #print_line('Attempting initial connection to Mi Flora sensor "{}" ({})'.format(name_pretty, mac), console=False, sd_notify=True)
 
     flora_poller = MiFloraPoller(mac=mac, backend=GatttoolBackend, cache_timeout=miflora_cache_timeout, retries=3, adapter=used_adapter)
@@ -444,15 +442,20 @@ def add_flower_sensor(flores, name, mac):
         flora['firmware'] = flora_poller.firmware_version()
     except (IOError, BluetoothBackendException):
         print_line('Initial connection to Mi Flora sensor "{}" ({}) failed.'.format(name_pretty, mac), error=True, sd_notify=True)
+        return flores
     else:
-        print('Internal name: "{}"'.format(name_clean))
-        print('Device name:   "{}"'.format(flora_poller.name()))
-        print('MAC address:   {}'.format(flora_poller._mac))
-        print('Firmware:      {}'.format(flora_poller.firmware_version()))
+        print_line('Internal name: "{}"'.format(name_clean))
+        print_line('Device name:   "{}"'.format(flora_poller.name()))
+        print_line('MAC address:   {}'.format(flora_poller._mac))
+        print_line('Firmware:      {}'.format(flora_poller.firmware_version()))
         print_line('Initial connection to Mi Flora sensor "{}" ({}) successful'.format(name_pretty, mac), sd_notify=True)
     print()
     flores[name_clean] = flora
     return flores
+
+
+# Initialize Mi Flora sensors
+flores = OrderedDict()
 
 for [name, mac] in config['Sensors'].items():
     flores = add_flower_sensor(flores, name, mac)
