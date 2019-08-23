@@ -6,6 +6,7 @@ import re
 import json
 import os.path
 import argparse
+import datetime
 from time import time, sleep, localtime, strftime
 from collections import OrderedDict
 from colorama import init as colorama_init
@@ -16,6 +17,8 @@ from miflora.miflora_poller import MiFloraPoller, MI_BATTERY, MI_CONDUCTIVITY, M
 from btlewrap import available_backends, BluepyBackend, GatttoolBackend, PygattBackend, BluetoothBackendException
 import paho.mqtt.client as mqtt
 import sdnotify
+
+MQTT_DEVICES_TOPIC = 'miflora/devices/#'
 
 project_name = 'Xiaomi Mi Flora Plant Sensor MQTT Client/Daemon'
 project_url = 'https://github.com/ThomDietrich/miflora-mqtt-daemon'
@@ -84,6 +87,10 @@ def on_connect(client, userdata, flags, rc):
 def on_publish(client, userdata, mid):
     #print_line('Data successfully published.')
     pass
+
+
+def new_device_callback(client, userdata, message):
+    print_line('new_device_callback', client, userdata, message)
 
 
 def flores_to_openhab_items(flores, reporting_mode):
@@ -162,6 +169,12 @@ if reporting_mode in ['mqtt-json', 'mqtt-homie', 'mqtt-smarthome', 'homeassistan
     mqtt_client = mqtt.Client()
     mqtt_client.on_connect = on_connect
     mqtt_client.on_publish = on_publish
+    # mqtt_client.on_message = on_message
+
+    # This code works in another program of mine, but here it doesn't, the callback is never invoked, *scratches head*
+    mqtt_client.subscribe(MQTT_DEVICES_TOPIC, qos=0)
+    mqtt_client.message_callback_add(MQTT_DEVICES_TOPIC, new_device_callback)
+
     if reporting_mode == 'mqtt-json':
         mqtt_client.will_set('{}/$announce'.format(base_topic), payload='{}', retain=True)
     elif reporting_mode == 'mqtt-homie':
