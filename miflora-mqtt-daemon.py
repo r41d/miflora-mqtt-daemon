@@ -6,7 +6,6 @@ import re
 import json
 import os.path
 import argparse
-import datetime
 from time import time, sleep, localtime, strftime
 from collections import OrderedDict
 from colorama import init as colorama_init
@@ -31,6 +30,212 @@ parameters = OrderedDict([
     (MI_BATTERY, dict(name="Battery", name_pretty='Sensor Battery Level', typeformat='%d', unit='%', device_class="battery"))
 ])
 
+
+class ReportingMode:
+    def __init__(self):
+        self.base_topic = "miflora"
+        self.mqtt = True
+
+    def set_will(self, mqtt_client, base_topic, device_id):
+        pass
+
+    def discovery_announcement(self, mqtt_client, base_topic, device_id, flores):
+        pass
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        pass
+
+
+class MqttJson(ReportingMode):
+    def __init__(self):
+        super().__init__()
+
+    def set_will(self, mqtt_client, base_topic, device_id):
+        mqtt_client.will_set('{}/$announce'.format(base_topic), payload='{}', retain=True)
+
+    def discovery_announcement(self, mqtt_client, base_topic, device_id, flores):
+        print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
+        flores_info = dict()
+        for [flora_name, flora] in flores.items():
+            flora_info = {key: value for key, value in flora.items() if key not in ['poller', 'stats']}
+            flora_info['topic'] = '{}/{}'.format(base_topic, flora_name)
+            flores_info[flora_name] = flora_info
+        mqtt_client.publish('{}/$announce'.format(base_topic), json.dumps(flores_info), retain=True)
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+        print()
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        print_line('Publishing to MQTT topic "{}/{}"'.format(base_topic, flora_name))
+        mqtt_client.publish('{}/{}'.format(base_topic, flora_name), json.dumps(data))
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+
+
+class MqttHomie(ReportingMode):
+    def __init__(self):
+        super().__init__()
+        self.base_topic = "homie"
+
+    def set_will(self, mqtt_client, base_topic, device_id):
+        mqtt_client.will_set('{}/{}/$online'.format(base_topic, device_id), payload='false', retain=True)
+
+    def discovery_announcement(self, mqtt_client, base_topic, device_id, flores):
+        print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
+        mqtt_client.publish('{}/{}/$homie'.format(base_topic, device_id), '2.1.0-alpha', 1, True)
+        mqtt_client.publish('{}/{}/$online'.format(base_topic, device_id), 'true', 1, True)
+        mqtt_client.publish('{}/{}/$name'.format(base_topic, device_id), device_id, 1, True)
+        mqtt_client.publish('{}/{}/$fw/version'.format(base_topic, device_id), flores[0]['firmware'], 1, True)
+
+        nodes_list = ','.join([flora_name for [flora_name, flora] in flores.items()])
+        mqtt_client.publish('{}/{}/$nodes'.format(base_topic, device_id), nodes_list, 1, True)
+
+        for [flora_name, flora] in flores.items():
+            topic_path = '{}/{}/{}'.format(base_topic, device_id, flora_name)
+            mqtt_client.publish('{}/$name'.format(topic_path), flora['name_pretty'], 1, True)
+            mqtt_client.publish('{}/$type'.format(topic_path), 'miflora', 1, True)
+            mqtt_client.publish('{}/$properties'.format(topic_path), 'battery,conductivity,light,moisture,temperature', 1, True)
+            mqtt_client.publish('{}/battery/$settable'.format(topic_path), 'false', 1, True)
+            mqtt_client.publish('{}/battery/$unit'.format(topic_path), 'percent', 1, True)
+            mqtt_client.publish('{}/battery/$datatype'.format(topic_path), 'int', 1, True)
+            mqtt_client.publish('{}/battery/$range'.format(topic_path), '0:100', 1, True)
+            mqtt_client.publish('{}/conductivity/$settable'.format(topic_path), 'false', 1, True)
+            mqtt_client.publish('{}/conductivity/$unit'.format(topic_path), 'µS/cm', 1, True)
+            mqtt_client.publish('{}/conductivity/$datatype'.format(topic_path), 'int', 1, True)
+            mqtt_client.publish('{}/conductivity/$range'.format(topic_path), '0:*', 1, True)
+            mqtt_client.publish('{}/light/$settable'.format(topic_path), 'false', 1, True)
+            mqtt_client.publish('{}/light/$unit'.format(topic_path), 'lux', 1, True)
+            mqtt_client.publish('{}/light/$datatype'.format(topic_path), 'int', 1, True)
+            mqtt_client.publish('{}/light/$range'.format(topic_path), '0:50000', 1, True)
+            mqtt_client.publish('{}/moisture/$settable'.format(topic_path), 'false', 1, True)
+            mqtt_client.publish('{}/moisture/$unit'.format(topic_path), 'percent', 1, True)
+            mqtt_client.publish('{}/moisture/$datatype'.format(topic_path), 'int', 1, True)
+            mqtt_client.publish('{}/moisture/$range'.format(topic_path), '0:100', 1, True)
+            mqtt_client.publish('{}/temperature/$settable'.format(topic_path), 'false', 1, True)
+            mqtt_client.publish('{}/temperature/$unit'.format(topic_path), '°C', 1, True)
+            mqtt_client.publish('{}/temperature/$datatype'.format(topic_path), 'float', 1, True)
+            mqtt_client.publish('{}/temperature/$range'.format(topic_path), '*', 1, True)
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+        print()
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        print_line('Publishing data to MQTT base topic "{}/{}/{}"'.format(base_topic, device_id, flora_name))
+        for [param, value] in data.items():
+            mqtt_client.publish('{}/{}/{}/{}'.format(base_topic, device_id, flora_name, param), value, 1, False)
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+
+
+class MqttSmarthome(ReportingMode):
+    def __init__(self):
+        super().__init__()
+
+    def set_will(self, mqtt_client, base_topic, device_id):
+        mqtt_client.will_set('{}/connected'.format(base_topic), payload='0', retain=True)
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        for [param, value] in data.items():
+            print_line('Publishing data to MQTT topic "{}/status/{}/{}"'.format(base_topic, flora_name, param))
+            payload = dict()
+            payload['val'] = value
+            payload['ts'] = int(round(time() * 1000))
+            mqtt_client.publish('{}/status/{}/{}'.format(base_topic, flora_name, param), json.dumps(payload), retain=True)
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+
+
+class HomeassistantMqtt(ReportingMode):
+    def __init__(self):
+        super().__init__()
+        self.base_topic = "homeassistant"
+
+    def discovery_announcement(self, mqtt_client, base_topic, device_id, flores):
+        print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
+        for [flora_name, flora] in flores.items():
+            topic_path = '{}/sensor/{}'.format(base_topic, flora_name)
+            base_payload = {
+                "state_topic": "{}/state".format(topic_path).lower()
+            }
+            for sensor, params in parameters.items():
+                payload = dict(base_payload.items())
+                payload['unit_of_measurement'] = params['unit']
+                payload['value_template'] = "{{ value_json.%s }}" % (sensor,)
+                payload['name'] = "{} {}".format(flora_name, sensor.title())
+                if 'device_class' in params:
+                    payload['device_class'] = params['device_class']
+                mqtt_client.publish('{}/{}_{}/config'.format(topic_path, flora_name, sensor).lower(), json.dumps(payload), 1, True)
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        print_line('Publishing to MQTT topic "{}/sensor/{}/state"'.format(base_topic, flora_name).lower())
+        mqtt_client.publish('{}/sensor/{}/state'.format(base_topic, flora_name).lower(), json.dumps(data))
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+
+
+class ThingsboardJson(ReportingMode):
+    def __init__(self):
+        super().__init__()
+        self.base_topic = "v1/devices/me/telemetry"
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        print_line('Publishing to MQTT topic "{}" username "{}"'.format(base_topic, flora_name))
+        mqtt_client.username_pw_set(flora_name)
+        mqtt_client.reconnect()
+        sleep(1.0)
+        mqtt_client.publish('{}'.format(base_topic), json.dumps(data))
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+
+
+class WirenboardMqtt(ReportingMode):
+    def __init__(self):
+        super().__init__()
+        self.base_topic = ""
+
+    def discovery_announcement(self, mqtt_client, base_topic, device_id, flores):
+        print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
+        for [flora_name, flora] in flores.items():
+            mqtt_client.publish('/devices/{}/meta/name'.format(flora_name), flora_name, 1, True)
+            topic_path = '/devices/{}/controls'.format(flora_name)
+            mqtt_client.publish('{}/battery/meta/type'.format(topic_path), 'value', 1, True)
+            mqtt_client.publish('{}/battery/meta/units'.format(topic_path), '%', 1, True)
+            mqtt_client.publish('{}/conductivity/meta/type'.format(topic_path), 'value', 1, True)
+            mqtt_client.publish('{}/conductivity/meta/units'.format(topic_path), 'µS/cm', 1, True)
+            mqtt_client.publish('{}/light/meta/type'.format(topic_path), 'value', 1, True)
+            mqtt_client.publish('{}/light/meta/units'.format(topic_path), 'lux', 1, True)
+            mqtt_client.publish('{}/moisture/meta/type'.format(topic_path), 'rel_humidity', 1, True)
+            mqtt_client.publish('{}/temperature/meta/type'.format(topic_path), 'temperature', 1, True)
+            mqtt_client.publish('{}/timestamp/meta/type'.format(topic_path), 'text', 1, True)
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+        print()
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):
+        for [param, value] in data.items():
+            print_line('Publishing data to MQTT topic "/devices/{}/controls/{}"'.format(flora_name, param))
+            mqtt_client.publish('/devices/{}/controls/{}'.format(flora_name, param), value, retain=True)
+        mqtt_client.publish('/devices/{}/controls/{}'.format(flora_name, 'timestamp'), strftime('%Y-%m-%d %H:%M:%S', localtime()), retain=True)
+        sleep(0.5)  # some slack for the publish roundtrip and callback function
+
+
+class Json(ReportingMode):
+    def __init__(self):
+        super().__init__()
+        self.mqtt = False
+
+    def publish(self, mqtt_client, base_topic, flora_name, data):  # client will be None here and topic is irrelevant
+        data['timestamp'] = strftime('%Y-%m-%d %H:%M:%S', localtime())
+        data['name'] = flora_name
+        data['name_pretty'] = flora['name_pretty']
+        data['mac'] = flora['mac']
+        data['firmware'] = flora['firmware']
+        print('Data for "{}": {}'.format(flora_name, json.dumps(data)))
+
+
+reporting_modes_mapping = {
+    'mqtt-json': MqttJson,
+    'mqtt-homie': MqttHomie,
+    'mqtt-smarthome': MqttSmarthome,
+    'homeassistant-mqtt': HomeassistantMqtt,
+    'thingsboard-json': ThingsboardJson,
+    'wirenboard-mqtt': WirenboardMqtt,
+    'json': Json,
+}
+
+
 if False:
     # will be caught by python 2.7 to be illegal syntax
     print('Sorry, this script requires a python3 runtime environemt.', file=sys.stderr)
@@ -51,6 +256,7 @@ print(Style.RESET_ALL)
 # Systemd Service Notifications - https://github.com/bb4242/sdnotify
 sd_notifier = sdnotify.SystemdNotifier()
 
+
 # Logging function
 def print_line(text, error = False, warning=False, sd_notify=False, console=True):
     timestamp = strftime('%Y-%m-%d %H:%M:%S', localtime())
@@ -65,6 +271,7 @@ def print_line(text, error = False, warning=False, sd_notify=False, console=True
     if sd_notify:
         sd_notifier.notify('STATUS={} - {}.'.format(timestamp_sd, unidecode(text)))
 
+
 # Identifier cleanup
 def clean_identifier(name):
     clean = name.strip()
@@ -72,6 +279,7 @@ def clean_identifier(name):
         clean = clean.replace(this, that)
     clean = unidecode(clean)
     return clean
+
 
 # Eclipse Paho callbacks - http://www.eclipse.org/paho/clients/python/docs/#callbacks
 def on_connect(client, userdata, flags, rc):
@@ -131,19 +339,17 @@ config.optionxform = str
 config.read([os.path.join(config_dir, 'config.ini.dist'), os.path.join(config_dir, 'config.ini')])
 
 reporting_mode = config['General'].get('reporting_method', 'mqtt-json')
+
+# Check reporting mode
+if reporting_mode not in ['mqtt-json', 'mqtt-homie', 'json', 'mqtt-smarthome', 'homeassistant-mqtt', 'thingsboard-json', 'wirenboard-mqtt']:
+    print_line('Configuration parameter reporting_mode set to an invalid value', error=True, sd_notify=True)
+    sys.exit(1)
+
+reporting_mode_obj = reporting_modes_mapping[reporting_mode]()
 used_adapter = config['General'].get('adapter', 'hci0')
 daemon_enabled = config['Daemon'].getboolean('enabled', True)
 
-if reporting_mode == 'mqtt-homie':
-    default_base_topic = 'homie'
-elif reporting_mode == 'homeassistant-mqtt':
-    default_base_topic = 'homeassistant'
-elif reporting_mode == 'thingsboard-json':
-    default_base_topic = 'v1/devices/me/telemetry'
-elif reporting_mode == 'wirenboard-mqtt':
-    default_base_topic = ''
-else:
-    default_base_topic = 'miflora'
+default_base_topic = reporting_mode_obj.base_topic
 
 base_topic = config['MQTT'].get('base_topic', default_base_topic).lower()
 device_id = config['MQTT'].get('homie_device_id', 'miflora-mqtt-daemon').lower()
@@ -151,9 +357,6 @@ sleep_period = config['Daemon'].getint('period', 300)
 miflora_cache_timeout = sleep_period - 1
 
 # Check configuration
-if reporting_mode not in ['mqtt-json', 'mqtt-homie', 'json', 'mqtt-smarthome', 'homeassistant-mqtt', 'thingsboard-json', 'wirenboard-mqtt']:
-    print_line('Configuration parameter reporting_mode set to an invalid value', error=True, sd_notify=True)
-    sys.exit(1)
 if not config['Sensors']:
     print_line('No sensors found in configuration file "config.ini"', error=True, sd_notify=True)
     sys.exit(1)
@@ -164,7 +367,7 @@ if reporting_mode == 'wirenboard-mqtt' and base_topic:
 print_line('Configuration accepted', console=False, sd_notify=True)
 
 # MQTT connection
-if reporting_mode in ['mqtt-json', 'mqtt-homie', 'mqtt-smarthome', 'homeassistant-mqtt', 'thingsboard-json', 'wirenboard-mqtt']:
+if reporting_mode_obj.mqtt:
     print_line('Connecting to MQTT broker ...')
     mqtt_client = mqtt.Client()
     mqtt_client.on_connect = on_connect
@@ -175,12 +378,7 @@ if reporting_mode in ['mqtt-json', 'mqtt-homie', 'mqtt-smarthome', 'homeassistan
     mqtt_client.subscribe(MQTT_DEVICES_TOPIC, qos=0)
     mqtt_client.message_callback_add(MQTT_DEVICES_TOPIC, new_device_callback)
 
-    if reporting_mode == 'mqtt-json':
-        mqtt_client.will_set('{}/$announce'.format(base_topic), payload='{}', retain=True)
-    elif reporting_mode == 'mqtt-homie':
-        mqtt_client.will_set('{}/{}/$online'.format(base_topic, device_id), payload='false', retain=True)
-    elif reporting_mode == 'mqtt-smarthome':
-        mqtt_client.will_set('{}/connected'.format(base_topic), payload='0', retain=True)
+    reporting_mode_obj.set_will(mqtt_client, base_topic, device_id)
 
     if config['MQTT'].getboolean('tls', False):
         # According to the docs, setting PROTOCOL_SSLv23 "Selects the highest protocol version
@@ -213,6 +411,7 @@ sd_notifier.notify('READY=1')
 
 # Initialize Mi Flora sensors
 flores = OrderedDict()
+
 
 def add_flower_sensor(flores, name, mac):
     if not re.match("C4:7C:8D:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}", mac):
@@ -264,84 +463,7 @@ if parse_args.gen_openhab:
     sys.exit(0)
 
 # Discovery Announcement
-if reporting_mode == 'mqtt-json':
-    print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
-    flores_info = dict()
-    for [flora_name, flora] in flores.items():
-        flora_info = {key: value for key, value in flora.items() if key not in ['poller', 'stats']}
-        flora_info['topic'] = '{}/{}'.format(base_topic, flora_name)
-        flores_info[flora_name] = flora_info
-    mqtt_client.publish('{}/$announce'.format(base_topic), json.dumps(flores_info), retain=True)
-    sleep(0.5) # some slack for the publish roundtrip and callback function
-    print()
-elif reporting_mode == 'mqtt-homie':
-    print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
-    mqtt_client.publish('{}/{}/$homie'.format(base_topic, device_id), '2.1.0-alpha', 1, True)
-    mqtt_client.publish('{}/{}/$online'.format(base_topic, device_id), 'true', 1, True)
-    mqtt_client.publish('{}/{}/$name'.format(base_topic, device_id), device_id, 1, True)
-    mqtt_client.publish('{}/{}/$fw/version'.format(base_topic, device_id), flora['firmware'], 1, True)
-
-    nodes_list = ','.join([flora_name for [flora_name, flora] in flores.items()])
-    mqtt_client.publish('{}/{}/$nodes'.format(base_topic, device_id), nodes_list, 1, True)
-
-    for [flora_name, flora] in flores.items():
-        topic_path = '{}/{}/{}'.format(base_topic, device_id, flora_name)
-        mqtt_client.publish('{}/$name'.format(topic_path), flora['name_pretty'], 1, True)
-        mqtt_client.publish('{}/$type'.format(topic_path), 'miflora', 1, True)
-        mqtt_client.publish('{}/$properties'.format(topic_path), 'battery,conductivity,light,moisture,temperature', 1, True)
-        mqtt_client.publish('{}/battery/$settable'.format(topic_path), 'false', 1, True)
-        mqtt_client.publish('{}/battery/$unit'.format(topic_path), 'percent', 1, True)
-        mqtt_client.publish('{}/battery/$datatype'.format(topic_path), 'int', 1, True)
-        mqtt_client.publish('{}/battery/$range'.format(topic_path), '0:100', 1, True)
-        mqtt_client.publish('{}/conductivity/$settable'.format(topic_path), 'false', 1, True)
-        mqtt_client.publish('{}/conductivity/$unit'.format(topic_path), 'µS/cm', 1, True)
-        mqtt_client.publish('{}/conductivity/$datatype'.format(topic_path), 'int', 1, True)
-        mqtt_client.publish('{}/conductivity/$range'.format(topic_path), '0:*', 1, True)
-        mqtt_client.publish('{}/light/$settable'.format(topic_path), 'false', 1, True)
-        mqtt_client.publish('{}/light/$unit'.format(topic_path), 'lux', 1, True)
-        mqtt_client.publish('{}/light/$datatype'.format(topic_path), 'int', 1, True)
-        mqtt_client.publish('{}/light/$range'.format(topic_path), '0:50000', 1, True)
-        mqtt_client.publish('{}/moisture/$settable'.format(topic_path), 'false', 1, True)
-        mqtt_client.publish('{}/moisture/$unit'.format(topic_path), 'percent', 1, True)
-        mqtt_client.publish('{}/moisture/$datatype'.format(topic_path), 'int', 1, True)
-        mqtt_client.publish('{}/moisture/$range'.format(topic_path), '0:100', 1, True)
-        mqtt_client.publish('{}/temperature/$settable'.format(topic_path), 'false', 1, True)
-        mqtt_client.publish('{}/temperature/$unit'.format(topic_path), '°C', 1, True)
-        mqtt_client.publish('{}/temperature/$datatype'.format(topic_path), 'float', 1, True)
-        mqtt_client.publish('{}/temperature/$range'.format(topic_path), '*', 1, True)
-    sleep(0.5) # some slack for the publish roundtrip and callback function
-    print()
-elif reporting_mode == 'homeassistant-mqtt':
-    print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
-    for [flora_name, flora] in flores.items():
-        topic_path = '{}/sensor/{}'.format(base_topic, flora_name)
-        base_payload = {
-            "state_topic": "{}/state".format(topic_path).lower()
-        }
-        for sensor, params in parameters.items():
-            payload = dict(base_payload.items())
-            payload['unit_of_measurement'] = params['unit']
-            payload['value_template'] = "{{ value_json.%s }}" % (sensor, )
-            payload['name'] = "{} {}".format(flora_name, sensor.title())
-            if 'device_class' in params:
-                payload['device_class'] = params['device_class']
-            mqtt_client.publish('{}/{}_{}/config'.format(topic_path, flora_name, sensor).lower(), json.dumps(payload), 1, True)
-elif reporting_mode == 'wirenboard-mqtt':
-    print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
-    for [flora_name, flora] in flores.items():
-        mqtt_client.publish('/devices/{}/meta/name'.format(flora_name), flora_name, 1, True)
-        topic_path = '/devices/{}/controls'.format(flora_name)
-        mqtt_client.publish('{}/battery/meta/type'.format(topic_path), 'value', 1, True)
-        mqtt_client.publish('{}/battery/meta/units'.format(topic_path), '%', 1, True)
-        mqtt_client.publish('{}/conductivity/meta/type'.format(topic_path), 'value', 1, True)
-        mqtt_client.publish('{}/conductivity/meta/units'.format(topic_path), 'µS/cm', 1, True)
-        mqtt_client.publish('{}/light/meta/type'.format(topic_path), 'value', 1, True)
-        mqtt_client.publish('{}/light/meta/units'.format(topic_path), 'lux', 1, True)
-        mqtt_client.publish('{}/moisture/meta/type'.format(topic_path), 'rel_humidity', 1, True)
-        mqtt_client.publish('{}/temperature/meta/type'.format(topic_path), 'temperature', 1, True)
-        mqtt_client.publish('{}/timestamp/meta/type'.format(topic_path), 'text', 1, True)
-    sleep(0.5) # some slack for the publish roundtrip and callback function
-    print()
+reporting_mode_obj.discovery_announcement(mqtt_client, base_topic, device_id, flores)
 
 print_line('Initialization complete, starting MQTT publish loop', console=False, sd_notify=True)
 
@@ -370,7 +492,7 @@ while True:
             flora['stats']['failure'] = flora['stats']['failure'] + 1
             print_line('Failed to retrieve data from Mi Flora sensor "{}" ({}), success rate: {:.0%}'.format(
                 flora['name_pretty'], flora['mac'], flora['stats']['success']/flora['stats']['count']
-                ), error = True, sd_notify = True)
+            ), error=True, sd_notify=True)
             print()
             continue
         else:
@@ -380,49 +502,8 @@ while True:
             data[param] = flora['poller'].parameter_value(param)
         print_line('Result: {}'.format(json.dumps(data)))
 
-        if reporting_mode == 'mqtt-json':
-            print_line('Publishing to MQTT topic "{}/{}"'.format(base_topic, flora_name))
-            mqtt_client.publish('{}/{}'.format(base_topic, flora_name), json.dumps(data))
-            sleep(0.5) # some slack for the publish roundtrip and callback function
-        elif reporting_mode == 'thingsboard-json':
-            print_line('Publishing to MQTT topic "{}" username "{}"'.format(base_topic, flora_name))
-            mqtt_client.username_pw_set(flora_name)
-            mqtt_client.reconnect()
-            sleep(1.0)
-            mqtt_client.publish('{}'.format(base_topic), json.dumps(data))
-            sleep(0.5) # some slack for the publish roundtrip and callback function
-        elif reporting_mode == 'homeassistant-mqtt':
-            print_line('Publishing to MQTT topic "{}/sensor/{}/state"'.format(base_topic, flora_name).lower())
-            mqtt_client.publish('{}/sensor/{}/state'.format(base_topic, flora_name).lower(), json.dumps(data))
-            sleep(0.5) # some slack for the publish roundtrip and callback function
-        elif reporting_mode == 'mqtt-homie':
-            print_line('Publishing data to MQTT base topic "{}/{}/{}"'.format(base_topic, device_id, flora_name))
-            for [param, value] in data.items():
-                mqtt_client.publish('{}/{}/{}/{}'.format(base_topic, device_id, flora_name, param), value, 1, False)
-            sleep(0.5) # some slack for the publish roundtrip and callback function
-        elif reporting_mode == 'mqtt-smarthome':
-            for [param, value] in data.items():
-                print_line('Publishing data to MQTT topic "{}/status/{}/{}"'.format(base_topic, flora_name, param))
-                payload = dict()
-                payload['val'] = value
-                payload['ts'] = int(round(time() * 1000))
-                mqtt_client.publish('{}/status/{}/{}'.format(base_topic, flora_name, param), json.dumps(payload), retain=True)
-            sleep(0.5)  # some slack for the publish roundtrip and callback function
-        elif reporting_mode == 'wirenboard-mqtt':
-            for [param, value] in data.items():
-                print_line('Publishing data to MQTT topic "/devices/{}/controls/{}"'.format(flora_name, param))
-                mqtt_client.publish('/devices/{}/controls/{}'.format(flora_name, param), value, retain=True)
-            mqtt_client.publish('/devices/{}/controls/{}'.format(flora_name, 'timestamp'), strftime('%Y-%m-%d %H:%M:%S', localtime()), retain=True)
-            sleep(0.5)  # some slack for the publish roundtrip and callback function
-        elif reporting_mode == 'json':
-            data['timestamp'] = strftime('%Y-%m-%d %H:%M:%S', localtime())
-            data['name'] = flora_name
-            data['name_pretty'] = flora['name_pretty']
-            data['mac'] = flora['mac']
-            data['firmware'] = flora['firmware']
-            print('Data for "{}": {}'.format(flora_name, json.dumps(data)))
-        else:
-            raise NameError('Unexpected reporting_mode.')
+        reporting_mode_obj.publish(mqtt_client, base_topic, flora_name, data)
+
         print()
 
     print_line('Status messages published', console=False, sd_notify=True)
