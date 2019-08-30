@@ -512,11 +512,14 @@ while True:
         else:
             flora['stats']['success'] = flora['stats']['success'] + 1
 
-        for param,_ in parameters.items():
-            data[param] = flora['poller'].parameter_value(param)
-        print_line('Result: {}'.format(json.dumps(data)))
-
-        reporting_mode_obj.publish(mqtt_client, base_topic, flora_name, data)
+        try:
+            for param in parameters.keys():
+                data[param] = flora['poller'].parameter_value(param)
+        except BluetoothBackendException as bbe:
+            print_line('Read fail on sensor %s' % flora_name, error=True)
+        else:
+            print_line('Result: {}'.format(json.dumps(data)))
+            reporting_mode_obj.publish(mqtt_client, base_topic, flora_name, data)
 
         print()
 
