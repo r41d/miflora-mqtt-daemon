@@ -289,6 +289,7 @@ def on_connect(client, userdata, flags, rc):
 
         mqtt_client.subscribe(MQTT_DEVICES_TOPIC)
         mqtt_client.message_callback_add(MQTT_DEVICES_TOPIC, new_device_callback)
+
         print()
     else:
         print_line('Connection error with result code {} - {}'.format(str(rc), mqtt.connack_string(rc)), error=True)
@@ -359,7 +360,7 @@ default_base_topic = reporting_mode_obj.base_topic
 base_topic = config['MQTT'].get('base_topic', default_base_topic).lower()
 device_id = config['MQTT'].get('homie_device_id', 'miflora-mqtt-daemon').lower()
 sleep_period = config['Daemon'].getint('period', 300)
-miflora_cache_timeout = sleep_period - 1
+miflora_cache_timeout = config['Sensors'].getint('timeout', 10)
 
 # Check configuration
 if not config['Sensors']:

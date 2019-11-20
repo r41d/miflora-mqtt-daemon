@@ -74,6 +74,9 @@
 
 [Sensors]
 
+# Timeout when sensor does not properly respond
+timeout = 10
+
 # Add your Mi Flora sensors here. Each sensor consists of a name and a Ethernet MAC address.
 # Additional location information can be added to the name, delimited by an '@'.
 # Scan for sensors from the command line with:
