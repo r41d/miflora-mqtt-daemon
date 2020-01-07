@@ -34,6 +34,9 @@
 # The period between two measurements in seconds (Default: 300)
 #period = 300
 
+# Timeout when a sensor does not properly respond
+timeout = 10
+
 [MQTT]
 
 # The hostname or IP address of the MQTT broker to connect to (Default: localhost)
@@ -73,9 +76,7 @@
 #tls_certfile =
 
 [Sensors]
-
-# Timeout when sensor does not properly respond
-timeout = 10
+# This is solely a mapping of sensor names to MAC addresses
 
 # Add your Mi Flora sensors here. Each sensor consists of a name and a Ethernet MAC address.
 # Additional location information can be added to the name, delimited by an '@'.

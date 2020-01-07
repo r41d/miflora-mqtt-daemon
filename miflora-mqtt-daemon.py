@@ -360,7 +360,7 @@ default_base_topic = reporting_mode_obj.base_topic
 base_topic = config['MQTT'].get('base_topic', default_base_topic).lower()
 device_id = config['MQTT'].get('homie_device_id', 'miflora-mqtt-daemon').lower()
 sleep_period = config['Daemon'].getint('period', 300)
-miflora_cache_timeout = config['Sensors'].getint('timeout', 10)
+miflora_cache_timeout = config['Daemon'].getint('timeout', 10)
 
 # Check configuration
 if not config['Sensors']:
